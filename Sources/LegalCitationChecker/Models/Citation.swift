@@ -14,6 +14,7 @@ public enum CaseNameStatus: String, Codable, Sendable {
     case valid
     case invalid
     case error
+    case partiallyValid
 }
 
 /// The main data model for storing citation information

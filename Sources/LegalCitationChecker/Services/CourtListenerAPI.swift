@@ -127,37 +127,14 @@ public actor CourtListenerAPI {
         request.setValue("Token \(apiToken ?? "")", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw CourtListenerAPIError.invalidResponse
-            }
-            
-            print("Response status code: \(httpResponse.statusCode)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("Response data: \(responseString)")
-            }
-            
-            switch httpResponse.statusCode {
-            case 200:
-                let searchResponse = try JSONDecoder().decode(SearchResponse.self, from: data)
-                print("Found \(searchResponse.count) results")
-                return searchResponse.results
-            case 401:
-                throw CourtListenerAPIError.unauthorized
-            case 403:
-                throw CourtListenerAPIError.forbidden
-            case 429:
-                throw CourtListenerAPIError.rateLimitExceeded
-            default:
-                throw CourtListenerAPIError.serverError(httpResponse.statusCode)
-            }
-        } catch let error as CourtListenerAPIError {
-            throw error
-        } catch {
-            throw CourtListenerAPIError.networkError(error)
-        }
+        // Use the retry logic
+        let searchResponse: SearchResponse = try await performRequestWithRetry(
+            request: request,
+            responseType: SearchResponse.self
+        )
+        
+        print("Found \(searchResponse.count) results")
+        return searchResponse.results
     }
     
     // Retrieves the full text of a court opinion
@@ -235,47 +212,11 @@ public actor CourtListenerAPI {
         print("Headers: \(request.allHTTPHeaderFields ?? [:])")
         print("Body length: \(request.httpBody?.count ?? 0) bytes")
         
-        do {
-            print("\nSending request to CourtListener API...")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                print("❌ Invalid response type")
-                throw CourtListenerAPIError.invalidResponse
-            }
-            
-            print("\nResponse received:")
-            print("Status code: \(httpResponse.statusCode)")
-            if let responseString = String(data: data, encoding: .utf8) {
-                print("Response body: \(responseString)")
-            }
-            
-            switch httpResponse.statusCode {
-            case 200:
-                let decoder = JSONDecoder()
-                let results = try decoder.decode([CitationResponse].self, from: data)
-                print("✅ Successfully decoded \(results.count) citation responses")
-                return results
-            case 401:
-                print("❌ Unauthorized - Invalid API token")
-                throw CourtListenerAPIError.unauthorized
-            case 403:
-                print("❌ Forbidden - API token lacks required permissions")
-                throw CourtListenerAPIError.forbidden
-            case 429:
-                print("❌ Rate limit exceeded")
-                throw CourtListenerAPIError.rateLimitExceeded
-            default:
-                print("❌ Server error: \(httpResponse.statusCode)")
-                throw CourtListenerAPIError.serverError(httpResponse.statusCode)
-            }
-        } catch let error as CourtListenerAPIError {
-            print("❌ CourtListener API error: \(error)")
-            throw error
-        } catch {
-            print("❌ Network error: \(error)")
-            throw CourtListenerAPIError.networkError(error)
-        }
+        // Use the retry logic
+        return try await performRequestWithRetry(
+            request: request,
+            responseType: [CitationResponse].self
+        )
     }
     
     // Health check method to verify API connectivity and token validity
@@ -311,5 +252,65 @@ public actor CourtListenerAPI {
         } catch {
             throw CourtListenerAPIError.networkError(error)
         }
+    }
+    
+    // Performs a request with retry logic for better reliability
+    private func performRequestWithRetry<T: Decodable>(
+        request: URLRequest,
+        responseType: T.Type,
+        maxAttempts: Int = 3,
+        delay: TimeInterval = 1.0
+    ) async throws -> T {
+        var lastError: Error?
+        
+        for attempt in 1...maxAttempts {
+            do {
+                print("🔄 Attempt \(attempt) of \(maxAttempts)")
+                let (data, response) = try await URLSession.shared.data(for: request)
+                
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw CourtListenerAPIError.invalidResponse
+                }
+                
+                print("Response status code: \(httpResponse.statusCode)")
+                
+                switch httpResponse.statusCode {
+                case 200:
+                    let decodedResponse = try JSONDecoder().decode(responseType, from: data)
+                    print("✅ Successfully decoded response on attempt \(attempt)")
+                    return decodedResponse
+                case 401:
+                    // Don't retry on authentication errors
+                    throw CourtListenerAPIError.unauthorized
+                case 403:
+                    // Don't retry on forbidden errors
+                    throw CourtListenerAPIError.forbidden
+                case 429:
+                    throw CourtListenerAPIError.rateLimitExceeded
+                default:
+                    throw CourtListenerAPIError.serverError(httpResponse.statusCode)
+                }
+            } catch {
+                lastError = error
+                
+                // Don't retry on certain errors
+                if let apiError = error as? CourtListenerAPIError {
+                    switch apiError {
+                    case .unauthorized, .forbidden:
+                        throw error
+                    default:
+                        break
+                    }
+                }
+                
+                // Wait before retrying (except on last attempt)
+                if attempt < maxAttempts {
+                    print("⏳ Waiting \(delay) seconds before retry...")
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+        }
+        
+        throw lastError ?? CourtListenerAPIError.unknown("Request failed after \(maxAttempts) attempts")
     }
 } 

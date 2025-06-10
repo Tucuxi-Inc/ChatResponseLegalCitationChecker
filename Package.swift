@@ -22,7 +22,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/kevinkeller/SecureDefaults.git", from: "1.0.0")
+        .package(url: "https://github.com/vpeschenkov/SecureDefaults.git", from: "1.2.2")
     ],
     targets: [
         // Core citation checking logic
