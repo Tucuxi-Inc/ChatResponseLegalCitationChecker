@@ -98,7 +98,7 @@ private struct CitationResultRow: View {
             }
         }
         .padding(8)
-        .background(Color(.systemGray6))
+        .background(Color.gray.opacity(0.1))
         .cornerRadius(8)
     }
     
